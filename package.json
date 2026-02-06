@@ -1,13 +1,12 @@
 {
-  "name": "chillax-bot",
+  "name": "chillax-helper-bot",
   "version": "1.0.0",
-  "description": "Chillax Theme Assistant",
   "main": "index.js",
   "dependencies": {
-    "discord.js": "^14.16.3",
-    "axios": "^1.7.7",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.1"
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "axios": "^1.6.7"
   },
   "scripts": {
     "start": "node index.js"
