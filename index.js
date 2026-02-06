@@ -1,104 +1,150 @@
 require('dotenv').config();
 const { 
-    Client, GatewayIntentBits, REST, Routes, 
-    SlashCommandBuilder, EmbedBuilder 
+    Client, 
+    GatewayIntentBits, 
+    REST, 
+    Routes, 
+    SlashCommandBuilder, 
+    EmbedBuilder, 
+    ActivityType 
 } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
 
-// --- RENDER PORT BINDING ---
+/**
+ * 1. RENDER WEB SERVER (CRITICAL)
+ * Render kills any process that doesn't bind to a port within 90s.
+ */
 const app = express();
 const PORT = process.env.PORT || 10000;
-app.get('/', (req, res) => res.send('Bot is Online! 🚀'));
-app.listen(PORT, '0.0.0.0', () => console.log(`Health check listening on port ${PORT}`));
 
-// --- BOT CONFIG ---
-const client = new Client({ 
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] 
+app.get('/', (req, res) => res.status(200).send('Chillax Core: Online'));
+
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[RENDER] Health check active on port ${PORT}`);
 });
 
+/**
+ * 2. BOT INITIALIZATION
+ */
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent // Needed for AI auto-replies
+    ]
+});
+
+/**
+ * 3. COMMAND BUILDER
+ * Every option MUST have a description to pass v14 validation.
+ */
 const commands = [
-    // 1. Chillax Theme Help
     new SlashCommandBuilder()
         .setName('chillax')
-        .setDescription('Get info and download links for the Chillax Vencord theme.'),
-    
-    // 2. CSS Snippets for Vencord
+        .setDescription('Theme resources and installation help'),
     new SlashCommandBuilder()
         .setName('css')
-        .setDescription('Quick CSS snippets for Vencord theme development.'),
-
-    // 3. AI Command (OpenRouter)
-    new SlashCommandBuilder()
-        .setName('ai')
-        .setDescription('Ask the AI a question')
-        .addStringOption(option => 
-            option.setName('prompt')
-                .setDescription('Your question for the AI')
+        .setDescription('Get specific Vencord CSS snippets')
+        .addStringOption(opt => 
+            opt.setName('element')
+                .setDescription('Element to theme (e.g. search, nitro, font)')
                 .setRequired(true)),
-
-    // 4. Utility: Ping
     new SlashCommandBuilder()
-        .setName('ping')
-        .setDescription('Check bot latency.')
-].map(command => command.toJSON());
+        .setName('ask')
+        .setDescription('Ask the AI about theme development')
+        .addStringOption(opt => 
+            opt.setName('query')
+                .setDescription('Your question')
+                .setRequired(true))
+].map(cmd => cmd.toJSON());
 
-// --- COMMAND REGISTRATION ---
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
-(async () => {
+/**
+ * 4. AI ENGINE (OpenRouter)
+ */
+async function getAIResponse(prompt, user) {
     try {
-        console.log('Refreshing slash commands...');
-        await rest.put(
-            Routes.applicationCommands(process.env.CLIENT_ID),
-            { body: commands },
-        );
-        console.log('Successfully reloaded slash commands.');
-    } catch (error) {
-        console.error('Registration Error:', error);
+        const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+            model: "google/gemini-2.0-flash-001",
+            messages: [
+                { 
+                    role: "system", 
+                    content: "You are the Chillax Theme Assistant. Provide Vencord-compatible CSS. Use selectors like .container_e40c16 or [aria-label='User Settings']. FAQ: https://chillax.inmoresentum.net/vencordfaq.html" 
+                },
+                { role: "user", content: `${user} asks: ${prompt}` }
+            ]
+        }, {
+            headers: { 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` }
+        });
+        return res.data.choices[0].message.content;
+    } catch (e) {
+        return "⚠️ Assistant offline. Visit: https://chillax.inmoresentum.net/vencordfaq.html";
     }
-})();
+}
 
-// --- INTERACTIONS ---
+/**
+ * 5. EVENTS & REGISTRATION
+ */
+client.once('ready', async () => {
+    console.log(`[BOT] Logged in as ${client.user.tag}`);
+    
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+    try {
+        // Register to specific Guild if ID exists (Instant sync)
+        if (process.env.GUILD_ID) {
+            await rest.put(
+                Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
+                { body: commands }
+            );
+            console.log(`[BOT] Guild commands synced to ${process.env.GUILD_ID}`);
+        }
+        
+        // Register Global commands (1-hour delay)
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('[BOT] Global commands registered.');
+    } catch (err) {
+        console.error('[ERR] Registration failed:', err);
+    }
+});
+
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
-    const { commandName } = interaction;
-
-    if (commandName === 'ping') {
-        await interaction.reply(`🏓 Latency: ${client.ws.ping}ms`);
-    }
-
-    if (commandName === 'chillax') {
+    if (interaction.commandName === 'chillax') {
         const embed = new EmbedBuilder()
-            .setTitle('🍃 Chillax Theme Resources')
-            .setColor('#7289da')
-            .setDescription('The ultimate modern, clean, and customizable theme for Vencord.')
+            .setTitle('Chillax Vencord Theme')
+            .setColor('#2ECC71')
+            .setDescription('The ultimate clean Discord experience.')
             .addFields(
-                { name: 'GitHub', value: '[Chillax Repo](https://github.com/warrayquipsome/Chillax)', inline: true },
-                { name: 'Docs', value: '[Installation Guide](https://github.com/Chillax-ORG/chillaxdocs)', inline: true }
-            )
-            .setFooter({ text: 'Vencord Theme Development' });
-        await interaction.reply({ embeds: [embed] });
+                { name: 'Import URL', value: '`https://inmoresentum.github.io/Chillax/chillax.css`' },
+                { name: 'Official FAQ', value: 'https://chillax.inmoresentum.net/vencordfaq.html' }
+            );
+        return interaction.reply({ embeds: [embed] });
     }
 
-    if (commandName === 'css') {
-        const snippet = "
-http://googleusercontent.com/immersive_entry_chip/0
+    if (interaction.commandName === 'css') {
+        const element = interaction.options.getString('element').toLowerCase();
+        
+        // FIXED: Using backticks (`) for multi-line strings
+        let snippet = `/* Chillax Snippet: ${element} */\n`;
+        
+        if (element.includes('search')) {
+            snippet += `.searchBar_f0963d { display: none; }`;
+        } else if (element.includes('nitro')) {
+            snippet += `[aria-label="Send a gift"] { display: none; }`;
+        } else {
+            snippet += `/* No direct snippet found. Try using /ask for specific CSS. */`;
+        }
 
----
+        return interaction.reply(`\`\`\`css\n${snippet}\n\`\`\``);
+    }
 
-### 3. Setting it up on Render
-1.  **Environment Variables:** In the Render dashboard, add:
-    * `DISCORD_TOKEN`: Your bot token.
-    * `CLIENT_ID`: Your bot's Application ID.
-    * `OPENROUTER_API_KEY`: Get one for free at [openrouter.ai](https://openrouter.ai/).
-2.  **Build Command:** `npm install`
-3.  **Start Command:** `npm start`
-4.  **Auto-Ping (Optional):** Since you're on the Free tier, Render services sleep after 15 minutes of inactivity. Use a free service like [Cron-job.org](https://cron-job.org/) to ping your Render URL (`https://your-app.onrender.com/`) every 14 minutes to keep it awake.
+    if (interaction.commandName === 'ask') {
+        await interaction.deferReply();
+        const reply = await getAIResponse(interaction.options.getString('query'), interaction.user.username);
+        await interaction.editReply(reply);
+    }
+});
 
-### Existing Bots for Reference
-* **[Venbot](https://github.com/Vencord/venbot):** The official bot for the Vencord server. Great for seeing how they handle user reporting and theme updates.
-* **[ChillBot](https://github.com/Chillax-ORG/ChillBot):** The official Python bot for the Chillax organization (though yours is now the Node.js alternative!).
-
-Would you like me to add a **Theme Preview** command that lets users upload a `.css` file and have the bot check it for common syntax errors?
+client.login(process.env.DISCORD_TOKEN);
