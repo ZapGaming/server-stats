@@ -1,23 +1,23 @@
 import os
 import discord
+from discord import app_commands
 from discord.ext import commands
 from openai import OpenAI
 from flask import Flask
 from threading import Thread
 
-# --- WEB SERVER SETUP (For Render Keep-Alive) ---
+# --- WEB SERVER SETUP (Render Keep-Alive) ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Chillax Support Bot is running."
+    return "Chillax Support Bot is online and listening."
 
 def run_web_server():
-    # Render assigns a PORT env variable automatically
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- AI CONFIGURATION (OpenRouter) ---
+# --- AI CONFIGURATION ---
 ai_client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY"),
@@ -27,77 +27,85 @@ ai_client = OpenAI(
     }
 )
 
+SYSTEM_PROMPT = (
+    "You are the Chillax Theme Assistant. Chillax is a modern Discord theme for Vencord/BetterDiscord. "
+    "When helping with CSS, wrap the code in blocks: ```css ... ```. "
+    "Be helpful but keep it concise and 'chill'. "
+    "Focus on Vencord-specific theme questions if asked."
+)
+
 def ask_ai(user_query, user_name):
     try:
         response = ai_client.chat.completions.create(
-            model="openrouter/auto", # Automatically picks the best/cheapest model
+            model="openrouter/auto",
             messages=[
-                {"role": "system", "content": (
-                    "You are the official support AI for the 'Chillax' Discord theme. "
-                    "Chillax is a clean, aesthetic theme used with Vencord or BetterDiscord. "
-                    "Your goal is to help users with CSS snippets, installation, and Vencord settings. "
-                    "Be concise, tech-savvy, and helpful. Use code blocks for CSS snippets."
-                )},
-                {"role": "user", "content": f"User {user_name} asks: {user_query}"}
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"{user_name} asks: {user_query}"}
             ]
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Error fetching AI response: {e}"
+        return f"⚠️ API Error: {e}"
 
-# --- DISCORD BOT SETUP ---
-intents = discord.Intents.default()
-intents.message_content = True  # CRITICAL: Enable this in Discord Dev Portal
+# --- BOT CLIENT SETUP ---
+class ChillaxBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+    async def setup_hook(self):
+        # Syncing slash commands
+        await self.tree.sync()
+        print(f"Synced slash commands for {self.user}")
 
-@bot.event
-async def on_ready():
-    print(f'✅ Connected to Discord as {bot.user}')
-    await bot.change_presence(activity=discord.Game(name="Customizing Chillax"))
+bot = ChillaxBot()
+
+# --- SLASH COMMANDS ---
+@bot.tree.command(name="css", description="Get AI help with a specific CSS tweak for Chillax")
+@app_commands.describe(query="What CSS change do you want to make?")
+async def css_help(interaction: discord.Interaction, query: str):
+    await interaction.response.defer() # Gives AI time to think
+    ai_response = ask_ai(f"Provide a CSS snippet for: {query}", interaction.user.name)
+    
+    if len(ai_response) > 2000:
+        await interaction.followup.send(ai_response[:1990] + "...")
+    else:
+        await interaction.followup.send(ai_response)
+
+# --- AUTO-CHIME & MENTION LOGIC ---
+CHILLAX_KEYWORDS = ["theme", "css", "layout", "background", "vencord", "font", "color"]
 
 @bot.event
 async def on_message(message):
-    # Don't respond to ourselves
     if message.author == bot.user:
         return
 
-    # Trigger AI if the bot is mentioned or if "Chillax" is mentioned
-    if bot.user.mentioned_in(message) or "chillax" in message.content.lower():
+    content_lower = message.content.lower()
+    is_mentioned = bot.user.mentioned_in(message)
+    # Check if any keyword is in the message
+    has_keyword = any(keyword in content_lower for keyword in CHILLAX_KEYWORDS)
+
+    if is_mentioned or (has_keyword and "chillax" in content_lower):
         async with message.channel.typing():
-            # Clean the message content (remove the bot mention)
-            clean_content = message.content.replace(f'<@!{bot.user.id}>', '').replace(f'<@{bot.user.id}>', '').strip()
+            # Remove mention from text for cleaner AI query
+            clean_text = message.content.replace(f'<@!{bot.user.id}>', '').replace(f'<@{bot.user.id}>', '').strip()
             
-            if not clean_content:
-                clean_content = "Tell me about the Chillax theme."
+            # If they just pinged with no text
+            if not clean_text and is_mentioned:
+                await message.reply("Yo! Need help with the Chillax theme? Try `/css` or ask me about a specific layout tweak.")
+                return
 
-            answer = ask_ai(clean_content, message.author.name)
-            
-            # Send the response (handling Discord's 2000 char limit)
-            if len(answer) > 2000:
-                chunks = [answer[i:i+1900] for i in range(0, len(answer), 1900)]
-                for chunk in chunks:
-                    await message.reply(chunk)
-            else:
-                await message.reply(answer)
+            response = ask_ai(clean_text, message.author.name)
+            await message.reply(response)
 
-    # Process other commands (like !ping)
-    await bot.process_commands(message)
-
-# --- BOT COMMANDS ---
-@bot.command()
-async def ping(ctx):
-    await ctx.send(f"🏓 Pong! Latency: {round(bot.latency * 1000)}ms")
-
-# --- EXECUTION ---
+# --- STARTUP ---
 if __name__ == "__main__":
-    # Start the Flask thread
     t = Thread(target=run_web_server)
     t.start()
     
-    # Run the Discord Bot
     token = os.getenv("DISCORD_TOKEN")
     if token:
         bot.run(token)
     else:
-        print("❌ FATAL: DISCORD_TOKEN not found in Environment Variables.")
+        print("MISSING DISCORD_TOKEN")
