@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, REST, 
-    Routes, EmbedBuilder, ActivityType 
+    Routes, EmbedBuilder, ActivityType, PermissionFlagsBits 
 } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
@@ -9,6 +9,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// 1. CLIENT SETUP
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -19,156 +20,162 @@ const client = new Client({
     ]
 });
 
-// --- SLASH COMMANDS ---
+// 2. COMPLEX COMMANDS
 const commands = [
-    new SlashCommandBuilder().setName('badge').setDescription('Generate Chillax server badge').addStringOption(o => o.setName('invite').setRequired(true).setDescription('Invite code')),
-    new SlashCommandBuilder().setName('faq').setDescription('Quick links to Chillax help'),
-    new SlashCommandBuilder().setName('dice').setDescription('Roll a 3D-style dice').addIntegerOption(o => o.setName('sides').setDescription('Sides')),
-    new SlashCommandBuilder().setName('ping').setDescription('Check bot heartbeat'),
-    new SlashCommandBuilder().setName('themeinfo').setDescription('Details about Chillax Vencord theme'),
-    new SlashCommandBuilder().setName('clear').setDescription('Purge messages (Staff Only)').addIntegerOption(o => o.setName('amount').setRequired(true).setDescription('1-100'))
+    new SlashCommandBuilder()
+        .setName('badge')
+        .setDescription('Create a Chillax server stats badge')
+        .addStringOption(o => o.setName('invite').setRequired(true).setDescription('The invite code')),
+    
+    new SlashCommandBuilder()
+        .setName('chillax')
+        .setDescription('Chillax Theme Hub')
+        .addSubcommand(sub => sub.setName('faq').setDescription('Get help links'))
+        .addSubcommand(sub => sub.setName('css').setDescription('Get a common CSS snippet')
+            .addStringOption(o => o.setName('type').setRequired(true).setDescription('What to edit?')
+                .addChoices(
+                    { name: 'Custom Font', value: 'font' },
+                    { name: 'Glass Effect', value: 'glass' },
+                    { name: 'Hide Help Button', value: 'hidehelp' }
+                ))),
+
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Detailed bot & theme stats'),
+
+    new SlashCommandBuilder()
+        .setName('dice')
+        .setDescription('Complex dice roll')
+        .addIntegerOption(o => o.setName('amount').setDescription('Number of dice'))
+        .addIntegerOption(o => o.setName('sides').setDescription('Sides per dice'))
 ].map(c => c.toJSON());
 
-// --- AI LOGIC (OPENROUTER) ---
-async function getAIResponse(userMessage, userName) {
+// 3. AI & CSS TRAINING SEQUENCE
+const CHILLAX_CONTEXT = `
+You are the "Chillax AI Assistant". 
+Personality: Chill, modern, developer-friendly.
+Theme Knowledge: Chillax is a premium Vencord theme. 
+FAQ Link: https://chillax.inmoresentum.net/vencordfaq.html
+Instruction: If users ask for CSS, provide code blocks. If they ask for help, refer to the FAQ. 
+Stay proactive! If a user sounds frustrated, offer a CSS snippet or the FAQ.
+`;
+
+const CSS_LIBRARY = {
+    font: "/* Chillax Custom Font */\n:root {\n  --font-primary: 'Poppins', sans-serif;\n  --font-display: 'Poppins', sans-serif;\n}",
+    glass: "/* Chillax Glass Effect */\n.container_e40c16 {\n  background: rgba(0,0,0,0.4) !important;\n  backdrop-filter: blur(10px);\n}",
+    hidehelp: "/* Hide Help Button */\n[aria-label='Help'] {\n  display: none;\n}"
+};
+
+async function askAI(prompt, user) {
     try {
-        const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-            model: "google/gemini-2.0-flash-001", // Very fast and usually free/cheap on OpenRouter
+        const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+            model: "google/gemini-2.0-flash-001", 
             messages: [
-                { 
-                    role: "system", 
-                    content: `You are the Chillax Assistant for the Chillax Vencord Theme. 
-                    Your goal is to help users with theme installation and CSS issues. 
-                    ALWAYS refer people to the official FAQ: https://chillax.inmoresentum.net/vencordfaq.html 
-                    Be cool, concise, and helpful. User's name is ${userName}.` 
-                },
-                { role: "user", content: userMessage }
+                { role: "system", content: CHILLAX_CONTEXT },
+                { role: "user", content: `User ${user} says: ${prompt}` }
             ]
         }, {
             headers: { 
                 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-                'HTTP-Referer': `https://server-stats-dlgi.onrender.com`, // Required by OpenRouter
-                'Content-Type': 'application/json' 
+                'HTTP-Referer': 'https://chillax.inmoresentum.net'
             }
         });
-        return response.data.choices[0].message.content;
-    } catch (e) {
-        console.error("OpenRouter Error:", e.response?.data || e.message);
-        return "I'm having trouble thinking right now. Please check the Chillax FAQ here: https://chillax.inmoresentum.net/vencordfaq.html";
-    }
+        return res.data.choices[0].message.content;
+    } catch (e) { return "I'm a bit overwhelmed! Check the FAQ: https://chillax.inmoresentum.net/vencordfaq.html"; }
 }
 
-// --- BOT EVENTS ---
+// 4. BOT EVENTS
 client.once('ready', async () => {
-    console.log(`✨ Chillax Bot Online | Serving: ${client.guilds.cache.size} servers`);
+    console.log(`✅ Chillax Bot is Online: ${client.user.tag}`);
     
-    // Set Status
-    client.user.setPresence({ 
-        activities: [{ name: 'with Chillax Theme', type: ActivityType.Playing }], 
-        status: 'online' 
+    // Set Online Status Immediately
+    client.user.setPresence({
+        status: 'online',
+        activities: [{ name: 'Chillax Vencord Theme', type: ActivityType.Watching }]
     });
 
-    // Register Commands
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
-        // Registering globally (can take up to 1 hour to appear)
+        // INSTANT REGISTRATION: Use this if commands aren't showing!
+        // Replace 'YOUR_GUILD_ID' with your actual server ID for instant results.
+        if(process.env.TEST_GUILD_ID) {
+            await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.TEST_GUILD_ID), { body: commands });
+            console.log('⚡ Instant Guild Commands Registered');
+        }
+        
+        // Global Registration (Take up to 1hr)
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('✅ Commands Registered Globally');
+        console.log('🌍 Global Commands Synced');
     } catch (e) { console.error(e); }
 });
 
-// --- MESSAGE AUTO-REPLY ---
+// AI CHIME-IN & CHAT LOGIC
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // Trigger AI if bot is mentioned or someone says "chillax help"
-    const isMentioned = message.mentions.has(client.user);
-    const isHelpRequest = message.content.toLowerCase().includes('chillax help');
-
-    if (isMentioned || isHelpRequest) {
+    const content = message.content.toLowerCase();
+    
+    // Proactive Chime-in (If someone asks "how to" or mentions "chillax")
+    if (content.includes('how do i') || content.includes('chillax') || message.mentions.has(client.user)) {
         await message.channel.sendTyping();
-        const reply = await getAIResponse(message.content, message.author.username);
-        message.reply(reply);
+        const aiMsg = await askAI(message.content, message.author.username);
+        message.reply(aiMsg);
     }
 });
 
-// --- COMMAND HANDLING ---
+// INTERACTION HANDLER
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    const { commandName } = interaction;
-
-    if (commandName === 'badge') {
-        const inv = interaction.options.getString('invite');
-        await interaction.reply({ 
-            content: `🛡️ **Chillax Stats Badge:**\n\`https://server-stats-dlgi.onrender.com/server?invite=${inv}\``, 
-            ephemeral: true 
-        });
+    if (interaction.commandName === 'chillax') {
+        const sub = interaction.options.getSubcommand();
+        if (sub === 'faq') {
+            return interaction.reply("📖 **Chillax FAQ:** https://chillax.inmoresentum.net/vencordfaq.html");
+        }
+        if (sub === 'css') {
+            const type = interaction.options.getString('type');
+            return interaction.reply(`🎨 **Chillax CSS Snippet:**\n\`\`\`css\n${CSS_LIBRARY[type]}\n\`\`\``);
+        }
     }
 
-    if (commandName === 'faq') {
+    if (interaction.commandName === 'badge') {
+        const inv = interaction.options.getString('invite');
+        const badgeUrl = `https://server-stats-dlgi.onrender.com/server?invite=${inv}`;
         const embed = new EmbedBuilder()
-            .setTitle('Chillax Help & FAQ')
-            .setURL('https://chillax.inmoresentum.net/vencordfaq.html')
-            .setColor('#7289da')
-            .setDescription('Need help? Our FAQ covers installation, plugins, and custom CSS!')
-            .setFooter({ text: 'Chillax Vencord Theme' });
+            .setTitle("🛡️ Server Stats Badge Generated")
+            .setDescription(`URL: \`${badgeUrl}\``)
+            .setImage(badgeUrl)
+            .setColor('#5865F2');
         await interaction.reply({ embeds: [embed] });
     }
 
-    if (commandName === 'themeinfo') {
-        await interaction.reply({
-            content: "💜 **Chillax** is a modern, performance-focused Vencord theme. \nGet it here: <https://chillax.inmoresentum.net/>",
-            ephemeral: false
-        });
-    }
-
-    if (commandName === 'dice') {
-        const s = interaction.options.getInteger('sides') || 6;
-        await interaction.reply(`🎲 **${interaction.user.username}** rolled a **${Math.floor(Math.random()*s)+1}**`);
-    }
-
-    if (commandName === 'ping') {
-        await interaction.reply(`🏓 **Pong!** (${client.ws.ping}ms)`);
-    }
-
-    if (commandName === 'clear') {
-        if (!interaction.member.permissions.has('ManageMessages')) {
-            return interaction.reply({ content: "You don't have permission to clear messages!", ephemeral: true });
-        }
-        const amt = interaction.options.getInteger('amount');
-        await interaction.channel.bulkDelete(amt, true);
-        await interaction.reply({ content: `🧹 Cleared **${amt}** messages.`, ephemeral: true });
-    }
+    // Ping, Stats, etc.
+    if (interaction.commandName === 'ping') interaction.reply(`🏓 Latency: ${client.ws.ping}ms`);
 });
 
-// --- RENDER WEB SERVER ---
+// 5. RENDER WEB SERVER + BADGE
 app.get('/server', async (req, res) => {
-    const code = req.query.invite;
-    if (!code) return res.status(400).send('Invite code missing');
-    
+    const invCode = req.query.invite;
     try {
-        const inv = await client.fetchInvite(code, { withCounts: true });
-        const name = inv.guild.name.replace(/&/g, '&amp;');
-        
-        // Vencord-style dark themed SVG
-        const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="240" height="22">
-            <rect width="240" height="22" fill="#111214" rx="5"/>
-            <rect width="80" height="22" fill="#313338" rx="5"/>
-            <text x="10" y="15" fill="#dbdee1" font-family="Arial" font-size="11" font-weight="bold">${name.slice(0,10)}</text>
-            <text x="90" y="15" fill="#949ba4" font-family="Arial" font-size="11">Online: ${inv.presenceCount} | Total: ${inv.memberCount}</text>
+        const inv = await client.fetchInvite(invCode, { withCounts: true });
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="20">
+            <rect width="220" height="20" fill="#1e1e2e" rx="4"/>
+            <text x="10" y="14" fill="#cdd6f4" font-family="sans-serif" font-size="11">${inv.guild.name.slice(0,10)}</text>
+            <text x="110" y="14" fill="#89b4fa" font-family="sans-serif" font-size="11">● ${inv.presenceCount} | All ${inv.memberCount}</text>
         </svg>`;
-
         res.setHeader('Content-Type', 'image/svg+xml');
-        res.setHeader('Cache-Control', 'no-cache');
         res.send(svg);
-    } catch (e) {
-        res.status(404).send('Invalid Invite');
-    }
+    } catch (e) { res.status(404).send('Invalid Invite'); }
 });
 
-app.get('/', (req, res) => res.send('Chillax Bot & Badge Service Online! 🚀'));
+// Auto-pinger for Render Health Checks
+app.get('/', (req, res) => res.send('System Online 🟢'));
 
 client.login(process.env.DISCORD_TOKEN);
-app.listen(PORT, '0.0.0.0', () => console.log(`Express listening on ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on port ${PORT}`);
+    // Optional: Self-ping every 10 mins to stay awake
+    setInterval(() => {
+        axios.get(`https://server-stats-dlgi.onrender.com/`).catch(() => {});
+    }, 600000);
+});
