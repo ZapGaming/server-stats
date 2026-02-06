@@ -1,144 +1,108 @@
 require('dotenv').config();
-const { 
-    Client, 
-    GatewayIntentBits, 
-    SlashCommandBuilder, 
-    REST, 
-    Routes, 
-    EmbedBuilder 
-} = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const express = require('express');
-const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 // Initialize Discord Client
+// Note: GuildPresences intent is required for accurate online counts
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildPresences
+        GatewayIntentBits.GuildInvites,
+        GatewayIntentBits.GuildPresences 
     ]
 });
 
 // --- DISCORD BOT LOGIC ---
-
 client.once('ready', async () => {
-    console.log(`🚀 Authenticated as ${client.user.tag}`);
+    console.log(`✅ Badge Bot Active: ${client.user.tag}`);
 
-    // Register the slash command
     const commands = [
         new SlashCommandBuilder()
-            .setName('generate-badge')
-            .setDescription('Get the dynamic badge link for this server')
+            .setName('badge')
+            .setDescription('Get the badge link for this server')
             .addStringOption(option => 
                 option.setName('invite')
-                    .setDescription('The invite code (e.g., "discord-gg-xyz")')
+                    .setDescription('The server invite code (e.g., discord-developers)')
                     .setRequired(true))
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('Successfully registered slash commands.');
-    } catch (error) {
-        console.error('Error registering commands:', error);
+    } catch (e) {
+        console.error('❌ Slash Command Error:', e);
     }
 });
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
-    if (interaction.commandName === 'generate-badge') {
+    if (interaction.commandName === 'badge') {
         const invite = interaction.options.getString('invite');
-        const baseUrl = process.env.RENDER_EXTERNAL_URL || `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
-        const badgeUrl = `${baseUrl}/server?invite=${invite}`;
+        const host = 'server-stats-dlgi.onrender.com';
+        const badgeUrl = `https://${host}/server?invite=${invite}`;
 
-        const embed = new EmbedBuilder()
-            .setTitle('🛡️ Server Stats Badge')
-            .setColor('#5865F2')
-            .setDescription(`Here is your dynamic badge URL:\n\`\`\`${badgeUrl}\`\`\``)
-            .addFields({ name: 'Preview', value: `[Click to view](${badgeUrl})` });
-
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        await interaction.reply({
+            content: `🛡️ **Your Server Stats Badge:**\n\`${badgeUrl}\``,
+            ephemeral: true
+        });
     }
 });
 
-// --- EXPRESS WEB SERVER LOGIC ---
-
+// --- BADGE GENERATOR ENDPOINT ---
 app.get('/server', async (req, res) => {
     const inviteCode = req.query.invite;
-
-    if (!inviteCode) {
-        return res.status(400).send('Missing invite parameter.');
-    }
+    if (!inviteCode) return res.status(400).send('Missing invite code.');
 
     try {
-        // 1. Fetch Discord Server Data
+        // Fetch data directly from Discord
         const invite = await client.fetchInvite(inviteCode, { withCounts: true });
-        const guild = invite.guild;
-        const totalMembers = invite.memberCount;
-        const onlineMembers = invite.presenceCount;
+        
+        const guildName = invite.guild.name;
+        const online = invite.presenceCount || 0;
+        const total = invite.memberCount || 0;
 
-        // 2. Fetch Owner Status via Lanyard
-        let ownerStatus = 'offline';
-        try {
-            const lanyardRes = await axios.get(`https://api.lanyard.rest/v1/users/${guild.ownerId}`);
-            ownerStatus = lanyardRes.data.data.discord_status;
-        } catch (e) {
-            // Fails gracefully if owner isn't on Lanyard
-            ownerStatus = 'offline';
-        }
+        // Clean name for SVG (escapes characters like &)
+        const safeName = guildName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-        // 3. Generate SVG
-        const statusColors = {
-            online: '#43b581',
-            idle: '#faa61a',
-            dnd: '#f04747',
-            offline: '#747f8d'
-        };
-
-        const color = statusColors[ownerStatus] || statusColors.offline;
-        const guildName = guild.name.replace(/&/g, '&amp;');
-
+        // Shield-style SVG Badge
         const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="320" height="20" viewBox="0 0 320 20">
-            <linearGradient id="b" x2="0" y2="100%">
+        <svg xmlns="http://www.w3.org/2000/svg" width="220" height="20" viewBox="0 0 220 20">
+            <linearGradient id="g" x2="0" y2="100%">
                 <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
                 <stop offset="1" stop-opacity=".1"/>
             </linearGradient>
-            <mask id="a">
-                <rect width="320" height="20" rx="3" fill="#fff"/>
+            <mask id="m">
+                <rect width="220" height="20" rx="3" fill="#fff"/>
             </mask>
-            <g mask="url(#a)">
-                <rect width="120" height="20" fill="#555"/>
-                <rect x="120" width="130" height="20" fill="#5865F2"/>
-                <rect x="250" width="70" height="20" fill="${color}"/>
-                <rect width="320" height="20" fill="url(#b)"/>
+            <g mask="url(#m)">
+                <rect width="90" height="20" fill="#2C2F33"/>
+                <rect x="90" width="130" height="20" fill="#5865F2"/>
+                <rect width="220" height="20" fill="url(#g)"/>
             </g>
-            <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
-                <text x="60" y="15" fill="#010101" fill-opacity=".3">${guildName}</text>
-                <text x="60" y="14">${guildName}</text>
-                <text x="185" y="15" fill="#010101" fill-opacity=".3">Members: ${onlineMembers}/${totalMembers}</text>
-                <text x="185" y="14">Members: ${onlineMembers}/${totalMembers}</text>
-                <text x="285" y="15" fill="#010101" fill-opacity=".3">Owner</text>
-                <text x="285" y="14">Owner</text>
+            <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,sans-serif" font-size="11">
+                <text x="45" y="15" fill="#010101" fill-opacity=".3">${safeName.substring(0, 12)}</text>
+                <text x="45" y="14">${safeName.substring(0, 12)}</text>
+                <text x="155" y="15" fill="#010101" fill-opacity=".3">${online} Online • ${total} Total</text>
+                <text x="155" y="14">${online} Online • ${total} Total</text>
             </g>
         </svg>`;
 
         res.setHeader('Content-Type', 'image/svg+xml');
-        res.setHeader('Cache-Control', 'max-age=60'); // Cache for 1 minute
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.send(svg);
 
-    } catch (error) {
-        console.error(error);
-        res.status(500).send('Error fetching server stats. Ensure the invite code is valid.');
+    } catch (err) {
+        console.error('Fetch Error:', err.message);
+        res.status(500).send('Error fetching server data. Check if the invite is valid.');
     }
 });
 
+// Health check for Render
+app.get('/', (req, res) => res.send('Badge Service Online'));
+
 client.login(process.env.DISCORD_TOKEN);
-app.listen(PORT, () => {
-    console.log(`Web server listening on port ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
