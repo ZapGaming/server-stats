@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, REST, 
-    Routes, EmbedBuilder, ActivityType, Collection 
+    Routes, EmbedBuilder, ActivityType 
 } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
@@ -9,7 +9,6 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 1. ADVANCED CLIENT SETUP
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -20,34 +19,44 @@ const client = new Client({
     ]
 });
 
-// 2. THEME KNOWLEDGE BASE (Training Data)
-const CHILLAX_DATA = {
-    faq: "https://chillax.inmoresentum.net/vencordfaq.html",
-    repo: "https://github.com/InMoreSentum/Chillax",
-    base_css: "@import url('https://inmoresentum.github.io/Chillax/chillax.css');",
-    colors: {
-        accent: "#5865F2",
-        bg: "#111214",
-        text: "#dbdee1"
-    }
-};
+// --- FIXED COMMAND DEFINITIONS ---
+const commands = [
+    new SlashCommandBuilder()
+        .setName('badge')
+        .setDescription('Generate a high-res server stats badge')
+        .addStringOption(o => o.setName('invite').setDescription('The invite code to track').setRequired(false)),
+    
+    new SlashCommandBuilder()
+        .setName('ask')
+        .setDescription('Ask the Chillax AI for theme help or CSS')
+        .addStringOption(o => o.setName('query').setDescription('What do you need help with?').setRequired(true)),
 
-// 3. AI LOGIC - DYNAMIC & CONTEXT-AWARE
-async function askAI(prompt, history = []) {
+    new SlashCommandBuilder()
+        .setName('server')
+        .setDescription('Displays detailed information about this server'),
+
+    new SlashCommandBuilder()
+        .setName('roll')
+        .setDescription('Roll multi-sided dice')
+        .addIntegerOption(o => o.setName('sides').setDescription('How many sides (default 6)').setRequired(false))
+        .addIntegerOption(o => o.setName('count').setDescription('How many dice to roll').setRequired(false)),
+        
+    new SlashCommandBuilder()
+        .setName('ping')
+        .setDescription('Check the bot heartrate')
+].map(c => c.toJSON());
+
+// --- AI LOGIC (OPENROUTER) ---
+async function getAIResponse(prompt, user) {
     try {
         const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
             model: "google/gemini-2.0-flash-001",
             messages: [
                 { 
                     role: "system", 
-                    content: `You are the Chillax Master AI. You support the Chillax Vencord theme. 
-                    - If users ask for CSS: generate valid Vencord-compatible CSS code blocks.
-                    - Knowledge: FAQ at ${CHILLAX_DATA.faq}, GitHub at ${CHILLAX_DATA.repo}.
-                    - Tone: Smart, helpful, witty, and 'chill'.
-                    - If they ask for a badge, tell them to use /badge.` 
+                    content: "You are the Chillax Assistant. Help users with the Chillax Vencord Theme. FAQ: https://chillax.inmoresentum.net/vencordfaq.html. Give CSS in code blocks." 
                 },
-                ...history,
-                { role: "user", content: prompt }
+                { role: "user", content: `User ${user} asks: ${prompt}` }
             ]
         }, {
             headers: { 
@@ -57,111 +66,101 @@ async function askAI(prompt, history = []) {
         });
         return response.data.choices[0].message.content;
     } catch (e) {
-        return "The AI engine stalled. Check the docs here: " + CHILLAX_DATA.faq;
+        return "I'm having trouble thinking. Visit the FAQ: https://chillax.inmoresentum.net/vencordfaq.html";
     }
 }
 
-// 4. SLASH COMMAND REGISTRATION
-const commands = [
-    new SlashCommandBuilder().setName('badge').setDescription('Generate stats badge').addStringOption(o => o.setName('invite').setRequired(true)),
-    new SlashCommandBuilder().setName('ai-css').setDescription('AI-generated CSS for Chillax').addStringOption(o => o.setName('request').setRequired(true).setDescription('e.g. "make the sidebar pink"')),
-    new SlashCommandBuilder().setName('status').setDescription('Live health of Chillax services'),
-    new SlashCommandBuilder().setName('inspect').setDescription('Get technical info of a user').addUserOption(o => o.setName('target').setRequired(true))
-].map(c => c.toJSON());
-
-// 5. BOT EVENTS
+// --- EVENTS ---
 client.once('ready', async () => {
-    console.log(`🚀 Chillax Bot V2 Online: ${client.user.tag}`);
-    
-    // Set Dynamic Activity
-    client.user.setPresence({
-        status: 'online',
-        activities: [{ name: 'Vencord Theme Support', type: ActivityType.Competing }]
+    console.log(`✅ Chillax Bot Loaded: ${client.user.tag}`);
+    client.user.setPresence({ 
+        status: 'online', 
+        activities: [{ name: 'Chillax Vencord UI', type: ActivityType.Watching }] 
     });
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
-        // Register for specific guild (instant) AND global
-        if(process.env.TEST_GUILD_ID) {
-            await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.TEST_GUILD_ID), { body: commands });
-        }
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('✅ Commands Synced');
-    } catch (e) { console.error(e); }
+        console.log('✅ Global Commands Registered Successfully');
+    } catch (e) { console.error('❌ Registration Error:', e); }
 });
 
-// 6. SMART MESSAGE HANDLING
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
-
-    // Smart Chime-in (Probability based or Direct Mention)
-    const shouldReply = message.mentions.has(client.user) || 
-                        (message.content.toLowerCase().includes('chillax') && Math.random() > 0.7);
-
-    if (shouldReply) {
+    const content = message.content.toLowerCase();
+    
+    // Auto chime-in for help/css keywords
+    if (content.includes('chillax help') || content.includes('how do i css') || message.mentions.has(client.user)) {
         await message.channel.sendTyping();
-        const response = await askAI(message.content, []);
-        message.reply(response);
+        const reply = await getAIResponse(message.content, message.author.username);
+        message.reply(reply);
     }
 });
 
-// 7. INTERACTION HANDLER
-client.on('interactionCreate', async (i) => {
-    if (!i.isChatInputCommand()) return;
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
 
-    if (i.commandName === 'ai-css') {
-        await i.deferReply();
-        const request = i.options.getString('request');
-        const cssResponse = await askAI(`Generate only the CSS code for: ${request}. Wrap in code block.`, []);
-        await i.editReply({ content: `🎨 **Custom Chillax CSS Snippet:**\n${cssResponse}` });
+    if (interaction.commandName === 'badge') {
+        const invite = interaction.options.getString('invite') || 'NONE';
+        const url = `https://server-stats-dlgi.onrender.com/badge?id=${interaction.guildId}&invite=${invite}`;
+        const embed = new EmbedBuilder()
+            .setTitle('🛡️ Chillax Badge Link')
+            .setDescription(`**Embed URL:** \`${url}\`\n\n*Copy this into your README or website!*`)
+            .setImage(url)
+            .setColor('#5865F2');
+        await interaction.reply({ embeds: [embed] });
     }
 
-    if (i.commandName === 'badge') {
-        const inv = i.options.getString('invite');
-        const url = `https://server-stats-dlgi.onrender.com/server?invite=${inv}`;
-        const embed = new EmbedBuilder()
-            .setTitle('🛡️ Dynamic Stats Badge')
-            .setColor(CHILLAX_DATA.colors.accent)
-            .setDescription(`\`${url}\``)
-            .setImage(url);
-        await i.reply({ embeds: [embed] });
+    if (interaction.commandName === 'ask') {
+        await interaction.deferReply();
+        const reply = await getAIResponse(interaction.options.getString('query'), interaction.user.username);
+        await interaction.editReply(reply);
     }
 
-    if (i.commandName === 'status') {
-        const embed = new EmbedBuilder()
-            .setTitle('📊 Service Status')
-            .addFields(
-                { name: 'Bot Latency', value: `\`${client.ws.ping}ms\``, inline: true },
-                { name: 'FAQ Site', value: '[Online](https://chillax.inmoresentum.net/)', inline: true },
-                { name: 'Theme CDN', value: '🟢 Operational', inline: true }
-            )
-            .setColor('#43b581');
-        await i.reply({ embeds: [embed] });
+    if (interaction.commandName === 'ping') {
+        await interaction.reply(`🏓 Latency: **${client.ws.ping}ms**`);
     }
 });
 
-// 8. RENDER BADGE API
-app.get('/server', async (req, res) => {
-    const code = req.query.invite;
+// --- THE MASTER BADGE API ---
+app.get('/badge', async (req, res) => {
+    const guildId = req.query.id;
+    const invite = req.query.invite;
+
     try {
-        const inv = await client.fetchInvite(code, { withCounts: true });
+        let name = "Chillax Server";
+        let online = "Live";
+        let total = "N/A";
+
+        const guild = client.guilds.cache.get(guildId);
+        if (guild) {
+            name = guild.name;
+            total = guild.memberCount;
+        } else if (invite && invite !== 'NONE') {
+            const invData = await client.fetchInvite(invite, { withCounts: true });
+            name = invData.guild.name;
+            online = invData.presenceCount;
+            total = invData.memberCount;
+        }
+
         const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="240" height="26">
-            <rect width="240" height="26" fill="${CHILLAX_DATA.colors.bg}" rx="6"/>
-            <path d="M0 6a6 6 0 0 1 6-6h74v26H6a6 6 0 0 1-6-6V6z" fill="#313338"/>
-            <text x="10" y="17" fill="#fff" font-family="Arial,sans-serif" font-size="11" font-weight="bold">${inv.guild.name.slice(0,10)}</text>
-            <text x="90" y="17" fill="${CHILLAX_DATA.colors.accent}" font-family="Arial,sans-serif" font-size="11" font-weight="bold">${inv.presenceCount} ONLINE / ${inv.memberCount} TOTAL</text>
+        <svg xmlns="http://www.w3.org/2000/svg" width="400" height="120">
+            <rect width="400" height="120" rx="20" fill="#111214"/>
+            <rect width="12" height="120" rx="0" fill="#5865F2"/>
+            <text x="35" y="45" fill="#ffffff" font-family="Arial" font-size="22" font-weight="bold">${name.slice(0,22)}</text>
+            <text x="35" y="80" fill="#b5bac1" font-family="Arial" font-size="16">Online: ${online} • Total: ${total}</text>
+            <text x="290" y="105" fill="#5865F2" font-family="Arial" font-size="12" font-weight="bold">CHILLAX UI</text>
         </svg>`;
+
         res.setHeader('Content-Type', 'image/svg+xml');
+        res.setHeader('Cache-Control', 'no-cache');
         res.send(svg);
-    } catch (e) { res.status(404).send('Invalid'); }
+    } catch (e) {
+        res.status(404).send('Invalid Guild or Invite');
+    }
 });
 
-app.get('/', (req, res) => res.send('Chillax Core System Active.'));
+app.get('/', (req, res) => res.send('Chillax System Active 🟢'));
 
 client.login(process.env.DISCORD_TOKEN);
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on ${PORT}`);
-    // Keep-alive ping
-    setInterval(() => axios.get('https://server-stats-dlgi.onrender.com/').catch(() => {}), 600000);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`API Listening on ${PORT}`));
